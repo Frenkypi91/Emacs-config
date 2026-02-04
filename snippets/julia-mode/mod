@@ -1,0 +1,11 @@
+# -*- mode: snippet -*-
+# name: module
+# key: mod
+# --
+module ${1:MyModule}
+
+export ${2:symbols}
+
+${0:# code}
+
+end

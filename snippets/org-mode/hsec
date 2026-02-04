@@ -1,0 +1,7 @@
+# -*- mode: snippet -*-
+# name: heading with TODO
+# key: ht
+# --
+* TODO ${1:Titolo}
+  DEADLINE: <${2:`(format-time-string "%Y-%m-%d")`}>
+  ${0}

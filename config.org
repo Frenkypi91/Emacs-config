@@ -1,0 +1,1751 @@
+#+TITLE: Emacs Config
+#+AUTHOR: Fra
+#+PROPERTY: header-args:emacs-lisp :tangle ~/.emacs.d/config.el :lexical t
+
+* Core
+
+** Package install paths
+
+#+begin_src emacs-lisp
+(setq user-emacs-directory (file-name-as-directory (expand-file-name "~/.emacs.d/")))
+(setq package-user-dir (expand-file-name "elpa/" user-emacs-directory))
+(unless (file-directory-p package-user-dir)
+  (make-directory package-user-dir t))
+
+(let ((eln-dir (expand-file-name "eln-cache/" user-emacs-directory)))
+  (unless (file-directory-p eln-dir)
+    (make-directory eln-dir t))
+  (setq native-comp-eln-load-path (list eln-dir)))
+#+end_src
+
+** Verbosity
+
+#+begin_src emacs-lisp
+(setq use-package-verbose t)
+(setq package-verbose t)
+(setq url-show-status t)
+(setq url-debug t)
+(setq url-log-max t)
+#+end_src
+
+** Init -- Safety
+
+#+begin_src emacs-lisp
+(setq frame-inhibit-implied-resize t)
+(setq load-prefer-newer t)
+(setq byte-compile-warnings nil)
+
+(prefer-coding-system 'utf-8-unix)
+(setq vc-follow-symlinks t)
+
+(require 'cl-lib)
+(require 'seq)
+#+end_src
+
+** Package setup
+
+#+begin_src emacs-lisp
+(require 'package)
+
+(setq package-archive-priorities
+      '(("melpa-stable" . 2)
+        ("melpa"        . 1)
+        ("gnu"          . 0)))
+
+(setq package-archives
+      '(("melpa-stable" . "https://stable.melpa.org/packages/")
+        ("melpa"        . "https://melpa.org/packages/")
+        ("gnu"          . "https://elpa.gnu.org/packages/")))
+
+(package-initialize)
+
+(unless (package-installed-p 'use-package)
+  (package-refresh-contents)
+  (package-install 'use-package))
+
+(require 'use-package)
+
+(setq use-package-always-ensure t)
+(setq use-package-always-defer nil)
+#+end_src
+
+** Auto Update
+
+(defvar fp/pkg-update-stamp-file (expand-file-name ".last-package-update" user-emacs-directory)
+  "File that stores the last date (YYYY-MM-DD) when package update was attempted.")
+
+(defvar fp/pkg-update-log-file (expand-file-name "tmp/package-update.log" user-emacs-directory)
+  "Log file for the background package update process.")
+
+(defun fp/pkg--today-string ()
+  (format-time-string "%Y-%m-%d"))
+
+(defun fp/pkg--read-last-stamp ()
+  (when (file-exists-p fp/pkg-update-stamp-file)
+    (with-temp-buffer
+      (insert-file-contents fp/pkg-update-stamp-file)
+      (string-trim (buffer-string)))))
+
+(defun fp/pkg--write-stamp (s)
+  (make-directory (file-name-directory fp/pkg-update-stamp-file) t)
+  (with-temp-file fp/pkg-update-stamp-file
+    (insert s "\n")))
+
+(defun fp/pkg--background-upgrade-elisp ()
+  "Return the elisp code executed by the background Emacs batch process"
+  (let ((ued (expand-file-name user-emacs-directory))
+        (pud (expand-file-name package-user-dir)))
+    (format
+     (concat
+      "(progn\n"
+      "  (setq user-emacs-directory %S)\n"
+      "  (setq package-user-dir %S)\n"
+      "  (require 'package)\n"
+      "  (setq package-archive-priorities '((\"melpa-stable\" . 2) (\"melpa\" . 1) (\"gnu\" . 0)))\n"
+      "  (setq package-archives '((\"melpa-stable\" . \"https://stable.melpa.org/packages/\")\n"
+      "                          (\"melpa\"        . \"https://melpa.org/packages/\")\n"
+      "                          (\"gnu\"          . \"https://elpa.gnu.org/packages/\")))\n"
+      "  (package-initialize)\n"
+      "  (setq package-check-signature nil)\n"
+      "  (package-refresh-contents)\n"
+      "  (if (fboundp 'package-upgrade-all)\n"
+      "      (package-upgrade-all)\n"
+      "    (dolist (pkg (mapcar #'car package-alist))\n"
+      "      (ignore-errors (package-install pkg))))\n"
+      "  (kill-emacs 0))\n")
+     ued pud)))
+
+(defun fp/pkg-update-once-per-day ()
+  "Run package refresh+upgrade once per day in background
+No messages on success. One message only if problems."
+  (let* ((today (fp/pkg--today-string))
+         (last (fp/pkg--read-last-stamp)))
+    (unless (string= today last)
+      (fp/pkg--write-stamp today)
+      (make-directory (file-name-directory fp/pkg-update-log-file) t)
+      (when (file-exists-p fp/pkg-update-log-file)
+        (ignore-errors (delete-file fp/pkg-update-log-file)))
+      (let* ((elisp (fp/pkg--background-upgrade-elisp))
+             (proc
+              (make-process
+               :name "fp-package-update"
+               :noquery t
+               :command (list (or (executable-find "emacs") "emacs")
+                              "--batch" "-Q" "--eval" elisp)
+               :buffer (find-file-noselect fp/pkg-update-log-file)
+               :sentinel
+               (lambda (p _event)
+                 (when (memq (process-status p) '(exit signal))
+                   (let ((code (process-exit-status p)))
+                     (when (/= code 0)
+                       (message "Emacs package update FAILED (exit %d). Log: %s"
+                                code fp/pkg-update-log-file)))))))))
+        (ignore proc)))))
+
+(add-hook 'emacs-startup-hook #'fp/pkg-update-once-per-day)
+
+** Server
+
+#+begin_src emacs-lisp
+(require 'server)
+(unless (server-running-p)
+  (server-start))
+#+end_src
+
+** Backup -- Autosave -- Lockfiles
+
+#+begin_src emacs-lisp
+(let ((tmp-dir (expand-file-name "~/.emacs.d/tmp/")))
+  (unless (file-directory-p tmp-dir)
+    (make-directory tmp-dir t))
+  (setq make-backup-files nil
+        backup-inhibited t
+        auto-save-default nil
+        create-lockfiles nil
+        temporary-file-directory tmp-dir))
+#+end_src
+
+** Dired baseline
+
+#+begin_src emacs-lisp
+(require 'dired-x)
+#+end_src
+
+* Performance & Warnings
+
+#+begin_src emacs-lisp
+(setq ad-redefinition-action 'accept)
+(setq read-process-output-max (* 3 1024 1024))
+
+(setq warning-suppress-types nil)
+(setq warning-minimum-level :warning)
+
+;; Pick ONE behavior for native-comp warnings
+(setq native-comp-async-report-warnings-errors nil
+      comp-async-report-warnings-errors nil)
+#+end_src
+
+* Appearance & UI
+
+** Frame sizing -- centering
+
+#+begin_src emacs-lisp
+(setq frame-resize-pixelwise t)
+(setq frame-inhibit-implied-resize t)
+
+(defvar fp/frame-margin-left   15)
+(defvar fp/frame-margin-right  30)
+(defvar fp/frame-margin-top    10)
+(defvar fp/frame-margin-bottom 50)
+
+(defun fp/monitor-workarea (frame)
+  "Return workarea"
+  (or (and (fboundp 'frame-monitor-workarea)
+           (frame-monitor-workarea frame))
+      (let* ((attrs (and (fboundp 'frame-monitor-attributes)
+                         (frame-monitor-attributes frame)))
+             (wa (and attrs (alist-get 'workarea attrs))))
+        wa)))
+
+(defun fp/center-frame-with-margins (frame)
+  "Place FRAME inside its monitor workarea"
+  (when (and (frame-live-p frame) (display-graphic-p frame))
+    (let* ((wa (fp/monitor-workarea frame)))
+      (when (and wa (>= (length wa) 4))
+        (let* ((mx (nth 0 wa)) (my (nth 1 wa))
+               (mw (nth 2 wa)) (mh (nth 3 wa))
+               (tw (max 900 (- mw fp/frame-margin-left fp/frame-margin-right)))
+               (th (max 600 (- mh fp/frame-margin-top  fp/frame-margin-bottom)))
+               (tx (+ mx fp/frame-margin-left))
+               (ty (+ my fp/frame-margin-top)))
+          (set-frame-size frame tw th t)
+          (set-frame-position frame tx ty))))))
+
+(add-hook 'emacs-startup-hook
+          (lambda ()
+            (when (display-graphic-p)
+              (fp/center-frame-with-margins (selected-frame)))))
+
+(add-hook 'after-make-frame-functions
+          (lambda (f)
+            (with-selected-frame f
+              (fp/center-frame-with-margins f))))
+
+(when (boundp 'display-monitor-change-hook)
+  (add-hook 'display-monitor-change-hook
+            (lambda () (fp/center-frame-with-margins (selected-frame)))))
+#+end_src
+
+** UI
+
+#+begin_src emacs-lisp
+(when (fboundp 'menu-bar-mode)   (menu-bar-mode -1))
+(when (fboundp 'tool-bar-mode)   (tool-bar-mode -1))
+(when (fboundp 'scroll-bar-mode) (scroll-bar-mode -1))
+
+(add-to-list 'default-frame-alist '(menu-bar-lines . 0))
+(add-to-list 'default-frame-alist '(tool-bar-lines . 0))
+(add-to-list 'default-frame-alist '(vertical-scroll-bars . nil))
+
+(add-hook 'after-make-frame-functions
+          (lambda (frame)
+            (with-selected-frame frame
+              (when (fboundp 'menu-bar-mode)   (menu-bar-mode -1))
+              (when (fboundp 'tool-bar-mode)   (tool-bar-mode -1))
+              (when (fboundp 'scroll-bar-mode) (scroll-bar-mode -1)))))
+#+end_src
+
+** Startup Screen
+
+#+begin_src emacs-lisp
+(use-package visual-fill-column)
+
+(defvar-local fp/startup-pad-top-ov nil)
+(defvar-local fp/startup-pad-bot-ov nil)
+
+(defvar fp/startup-vertical-offset 120)
+(defvar fp/startup-column-width 65)
+
+(defun fp/startup--apply-horizontal-centering ()
+  (setq-local visual-fill-column-width fp/startup-column-width)
+  (setq-local visual-fill-column-center-text t)
+  (visual-line-mode 1)
+  (visual-fill-column-mode 1))
+
+(defun fp/startup--center-vertically (buf win)
+  (when (and (buffer-live-p buf) (window-live-p win))
+    (with-current-buffer buf
+      (when (overlayp fp/startup-pad-top-ov) (delete-overlay fp/startup-pad-top-ov))
+      (when (overlayp fp/startup-pad-bot-ov) (delete-overlay fp/startup-pad-bot-ov))
+      (cl-destructuring-bind (_l _t _r _b)
+          (window-body-pixel-edges win)
+        (let* ((win-h (- _b _t))
+               (content-wh (window-text-pixel-size win (point-min) (point-max) t))
+               (content-h (cdr content-wh))
+               (free (max 0 (- win-h content-h)))
+               (pad-top (max 0 (/ free 2)))
+               (pad-bot (max 0 (- free pad-top)))
+               (offset fp/startup-vertical-offset))
+          (setq pad-top (max 0 (- pad-top offset)))
+          (setq pad-bot (+ pad-bot offset))
+          (when (> pad-top 0)
+            (setq fp/startup-pad-top-ov (make-overlay (point-min) (point-min) buf t t))
+            (overlay-put fp/startup-pad-top-ov 'before-string
+                         (propertize "\n" 'line-height pad-top)))
+          (when (> pad-bot 0)
+            (setq fp/startup-pad-bot-ov (make-overlay (point-max) (point-max) buf t t))
+            (overlay-put fp/startup-pad-bot-ov 'after-string
+                         (propertize "\n" 'line-height pad-bot))))))))
+
+(defun fp/center-startup-buffer ()
+  (when-let* ((buf (or (get-buffer "*GNU Emacs*")
+                       (get-buffer "*About GNU Emacs*")))
+              (win (get-buffer-window buf t)))
+    (with-current-buffer buf
+      (fp/startup--apply-horizontal-centering)
+      (fp/startup--center-vertically buf win))))
+
+(defun fp/show-startup-screen ()
+  (when (display-graphic-p)
+    (fancy-startup-screen)
+    (delete-other-windows)
+    (fp/center-startup-buffer)))
+
+(add-hook 'emacs-startup-hook #'fp/show-startup-screen)
+
+(add-hook 'window-size-change-functions
+          (lambda (_frame)
+            (when (and (display-graphic-p)
+                       (or (get-buffer-window "*GNU Emacs*" t)
+                           (get-buffer-window "*About GNU Emacs*" t)))
+              (fp/center-startup-buffer))))
+
+(defun fp/kill-splash-hover ()
+  (let ((buf (get-buffer "*GNU Emacs*")))
+    (when buf
+      (with-current-buffer buf
+        (let ((inhibit-read-only t))
+          (remove-text-properties
+           (point-min) (point-max)
+           '(mouse-face nil help-echo nil keymap nil local-map nil))
+          (when (bound-and-true-p cursor-sensor-mode)
+            (cursor-sensor-mode -1)))))))
+
+(add-hook 'emacs-startup-hook #'fp/kill-splash-hover)
+#+end_src
+
+** Fonts
+
+#+begin_src emacs-lisp
+(defconst fp/font-name "JetBrainsMonoNL Nerd Font Mono")
+(defconst fp/font-size 200)
+
+(defun fp/apply-main-font (&optional frame)
+  (with-selected-frame (or frame (selected-frame))
+    (when (member fp/font-name (font-family-list))
+      (set-face-attribute 'default nil :font fp/font-name :height fp/font-size)
+      (set-face-attribute 'fixed-pitch nil :font fp/font-name :height fp/font-size)
+      (let ((var (or (seq-find (lambda (f) (member f (font-family-list)))
+                               '("DejaVu Sans" "Noto Sans" "Cantarell" "Liberation Sans"))
+                     fp/font-name)))
+        (set-face-attribute 'variable-pitch nil :font var :height fp/font-size))
+      (set-face-attribute 'mode-line nil :font fp/font-name :height fp/font-size)
+      (set-face-attribute 'mode-line-inactive nil :font fp/font-name :height fp/font-size)
+      (set-face-attribute 'minibuffer-prompt nil :font fp/font-name :height fp/font-size))))
+
+(fp/apply-main-font)
+(add-hook 'after-make-frame-functions #'fp/apply-main-font)
+#+end_src
+
+** Theme & Modeline
+
+#+begin_src emacs-lisp
+(use-package monochrome-theme
+  :demand t
+  :config
+  (load-theme 'monochrome t))
+
+(use-package doom-modeline
+  :demand t
+  :config
+  (setq doom-modeline-support-imenu t
+        doom-modeline-major-mode-icon t
+        doom-modeline-major-mode-color-icon t
+        doom-modeline-time nil)
+  (doom-modeline-mode 1))
+
+(use-package all-the-icons
+  :demand t
+  :config
+  (setq all-the-icons-scale-factor 1.0
+        all-the-icons-default-adjust 0.0))
+#+end_src
+
+** Visual feedback
+
+#+begin_src emacs-lisp
+(use-package beacon
+  :config (beacon-mode 1))
+
+(use-package pulsar
+  :init (pulsar-global-mode 1)
+  :custom (pulsar-delay 0.15))
+
+(use-package mixed-pitch
+  :hook (org-mode . mixed-pitch-mode)
+  :custom (mixed-pitch-variable-pitch-cursor nil))
+
+(setq fp/fixme-modes '(c++-mode c-mode emacs-lisp-mode latex-mode scheme-mode python-mode))
+
+(defface fp/font-lock-fixme-face '((t :weight bold)) "Face for TODO.")
+(defface fp/font-lock-note-face '((t :weight bold)) "Face for NOTE.")
+(defface fp/font-lock-important-face '((t :weight bold)) "Face for IMPORTANT.")
+(defface fp/font-lock-debug-face '((t :weight bold)) "Face for DEBUG.")
+
+(mapc (lambda (mode)
+        (font-lock-add-keywords
+         mode
+         '(("\\<\\(TODO\\)"      1 'fp/font-lock-fixme-face t)
+           ("\\<\\(DEBUG\\)"     1 'fp/font-lock-debug-face t)
+           ("\\<\\(IMPORTANT\\)" 1 'fp/font-lock-important-face t)
+           ("\\<\\(NOTE\\)"      1 'fp/font-lock-note-face t))))
+      fp/fixme-modes)
+#+end_src
+
+* Window & Buffer
+
+** No-split global
+
+#+begin_src emacs-lisp
+(setq split-width-threshold 9999
+      split-height-threshold 9999
+      pop-up-windows nil
+      even-window-sizes nil
+      display-buffer-base-action
+      '((display-buffer-reuse-window display-buffer-same-window)))
+
+(dolist (rule
+         '(("\\`\\*Warnings\\*\\'"          . (display-buffer-reuse-window display-buffer-same-window))
+           ("\\`\\*Compile-Log\\*\\'"       . (display-buffer-reuse-window display-buffer-same-window))
+           ("\\`\\*Messages\\*\\'"          . (display-buffer-reuse-window display-buffer-same-window))
+           ("\\`\\*Help\\*\\'"              . (display-buffer-reuse-window display-buffer-same-window))
+           ("\\`\\*Embark Collect .*\\*\\'" . (display-buffer-reuse-window display-buffer-same-window))
+           ("\\`\\*Backtrace\\*\\'"         . (display-buffer-reuse-window display-buffer-same-window))))
+  (add-to-list 'display-buffer-alist
+               (cons (car rule) (list (cdr rule)))))
+#+end_src
+
+** Split helpers
+
+#+begin_src emacs-lisp
+(defun fp/split-window-below-and-pick-buffer (&optional size)
+  (interactive "P")
+  (split-window-below size)
+  (other-window 1)
+  (if (fboundp 'consult-buffer)
+      (consult-buffer)
+    (switch-to-buffer (read-buffer "Buffer: " (other-buffer)))))
+
+(defun fp/split-window-right-and-pick-buffer (&optional size)
+  (interactive "P")
+  (split-window-right size)
+  (other-window 1)
+  (if (fboundp 'consult-buffer)
+      (consult-buffer)
+    (switch-to-buffer (read-buffer "Buffer: " (other-buffer)))))
+
+(global-set-key (kbd "C-x 2") #'fp/split-window-below-and-pick-buffer)
+(global-set-key (kbd "C-x 3") #'fp/split-window-right-and-pick-buffer)
+
+(setq split-right-preferred t)
+#+end_src
+
+* Editing Defaults & Global Keys
+
+#+begin_src emacs-lisp
+(defalias 'yes-or-no-p 'y-or-n-p)
+
+(setq-default fill-column 70)
+
+(setq undo-limit 20000000
+      undo-strong-limit 40000000)
+
+(setq scroll-step 3
+      line-number-mode t
+      ring-bell-function 'ignore)
+
+(column-number-mode)
+(global-visual-line-mode 1)
+
+(setq standard-indent 2
+      tab-stop-list nil
+      indent-tabs-mode nil)
+
+(add-hook 'before-save-hook #'delete-trailing-whitespace)
+
+(global-set-key [home] 'beginning-of-line)
+(global-set-key [end]  'end-of-line)
+#+end_src
+
+** File associations
+
+#+begin_src emacs-lisp
+(setq auto-mode-alist
+      (append
+       '(("\\.py\\'"       . python-mode)
+         ("\\.jl\\'"       . julia-mode)
+
+         ("\\.[rR]\\'"     . ess-r-mode)
+         ("\\.Rprofile\\'" . ess-r-mode)
+         ("\\.Renviron\\'" . ess-r-mode)
+         ("\\.Rhistory\\'" . ess-r-mode)
+
+         ("\\.c\\'"        . c-mode)
+         ("\\.h\\'"        . c-mode)
+
+         ("\\.cpp\\'"      . c++-mode)
+         ("\\.cc\\'"       . c++-mode)
+         ("\\.cxx\\'"      . c++-mode)
+         ("\\.hpp\\'"      . c++-mode)
+         ("\\.hin\\'"      . c++-mode)
+         ("\\.cin\\'"      . c++-mode)
+         ("\\.inl\\'"      . c++-mode)
+         ("\\.rdc\\'"      . c++-mode)
+         ("\\.c8\\'"       . c++-mode)
+
+         ("\\.f90\\'"      . f90-mode)
+         ("\\.F90\\'"      . f90-mode)
+         ("\\.f\\'"        . fortran-mode)
+
+         ("\\.tex\\'"      . LaTeX-mode)
+         ("\\.sty\\'"      . LaTeX-mode)
+         ("\\.cls\\'"      . LaTeX-mode)
+         ("\\.bib\\'"      . bibtex-mode)
+
+         ("\\.html?\\'"    . html-mode)
+         ("\\.css\\'"      . css-mode)
+         ("\\.md\\'"       . markdown-mode)
+         ("\\.markdown\\'" . markdown-mode)
+
+         ("\\.ini\\'"      . conf-mode)
+         ("\\.cfg\\'"      . conf-mode)
+         ("\\.conf\\'"     . conf-mode)
+         ("\\.rc\\'"       . conf-mode)
+
+         ("\\.service\\'"  . conf-mode)
+         ("\\.socket\\'"   . conf-mode)
+         ("\\.target\\'"   . conf-mode)
+         ("\\.timer\\'"    . conf-mode)
+         ("\\.mount\\'"    . conf-mode)
+
+         ("\\.toml\\'"     . conf-mode)
+         ("\\.ya?ml\\'"    . conf-mode)
+
+         ("\\.desktop\\'"  . conf-mode)
+
+         (".zshrc\\'"      . sh-mode)
+         (".zprofile\\'"   . sh-mode)
+         (".zlogin\\'"     . sh-mode)
+         (".zshenv\\'"     . sh-mode)
+
+         ("\\.txt\\'"      . indented-text-mode)
+         ("\\.emacs\\'"    . emacs-lisp-mode)
+         ("\\.ms\\'"       . fundamental-mode))
+       auto-mode-alist))
+#+end_src
+
+* Completion & Minibuffer
+
+** Company
+
+#+begin_src emacs-lisp
+(use-package company
+  :init (add-hook 'after-init-hook #'global-company-mode)
+  :custom
+  (company-idle-delay 0.1)
+  (company-minimum-prefix-length 1)
+  (company-selection-wrap-around t)
+  (company-show-numbers t)
+  :config
+  (company-tng-configure-default))
+
+(defun fp/company-default-backends ()
+  (setq-local company-backends '(company-capf company-files company-yasnippet)))
+
+(add-hook 'company-mode-hook #'fp/company-default-backends)
+(add-hook 'prog-mode-hook #'fp/company-default-backends)
+#+end_src
+
+** Vertico -- Orderless -- Marginalia -- Consult -- Embark
+
+#+begin_src emacs-lisp
+(use-package vertico
+  :init (vertico-mode 1)
+  :custom
+  (vertico-cycle t)
+  (vertico-resize nil))
+
+(use-package orderless
+  :custom
+  (completion-styles '(orderless basic))
+  (completion-category-defaults nil)
+  (completion-category-overrides
+   '((file (styles basic partial-completion)))))
+
+(use-package marginalia
+  :init (marginalia-mode 1))
+
+(use-package consult
+  :bind
+  (("C-s"     . consult-line)
+   ("C-c s r" . consult-ripgrep)
+   ("C-x b"   . consult-buffer)
+   ("M-y"     . consult-yank-pop)
+   ("M-g g"   . consult-goto-line)
+   ("M-g i"   . consult-imenu)
+   ("M-g o"   . consult-outline))
+  :custom
+  (consult-preview-key '("C-j" "C-k"))
+  (consult-narrow-key "<"))
+
+(use-package embark
+  :bind
+  (("C-."   . embark-act)
+   ("C-;"   . embark-dwim)
+   ("C-h B" . embark-bindings))
+  :init
+  (setq prefix-help-command #'embark-prefix-help-command))
+
+(use-package embark-consult
+  :after (embark consult)
+  :hook (embark-collect-mode . consult-preview-at-point-mode))
+
+(global-set-key (kbd "C-c s i") #'isearch-forward)
+(global-set-key (kbd "C-c s I") #'isearch-backward)
+#+end_src
+
+** Project -- Git
+
+#+begin_src emacs-lisp
+(use-package project :ensure nil)
+
+(use-package magit
+  :bind (("C-x g" . magit-status)))
+#+end_src
+
+#+begin_src emacs-lisp
+(with-eval-after-load 'treemacs
+  (add-to-list
+   'treemacs-ignored-file-predicates
+   (lambda (file full-path)
+     (or
+      (member (file-name-extension file)
+              '("aux" "ptc" "fdb_latexmk" "fls" "toc"
+                "glg" "glo" "gls" "glsdefs" "ist"
+                "acn" "acr" "alg" "mw"))
+      (string-match-p "synctex\\.gz\\'" file)
+      (string-match-p "pdfa\\.xmpi\\'" file)
+      (string-match-p "_region_\\.log\\'" file)
+      (string-match-p "_region_\\.tex\\'" file)
+      (string-match-p "/_minted-" full-path)
+      (string-match-p "/\\.auctex-auto/" full-path)))))
+#+end_src
+
+** Treemacs
+
+#+begin_src emacs-lisp
+(use-package treemacs
+  :defer t
+  :bind
+  (("C-c m"   . treemacs)
+   ("C-c M"   . treemacs-select-window)
+   ("C-c m p" . treemacs-add-project-to-workspace)
+   ("C-c m r" . treemacs-remove-project-from-workspace)
+   ("C-c m f" . treemacs-find-file))
+  :config
+  (setq treemacs-width 34
+        treemacs-is-never-other-window t
+        treemacs-follow-after-init t
+        treemacs-filewatch-mode t
+        treemacs-fringe-indicator-mode 'always
+        treemacs-git-mode 'extended)
+
+  (add-to-list 'display-buffer-alist
+               '("\\*Treemacs-.*\\*"
+                 (display-buffer-in-side-window)
+                 (side . left)
+                 (slot . 0)
+                 (window-width . 34)))
+
+  (with-eval-after-load 'all-the-icons
+    (setq treemacs-indentation 2)
+    (treemacs-resize-icons 18))
+
+  (treemacs-project-follow-mode 1)
+  (treemacs-follow-mode 1)
+  (treemacs-filewatch-mode 1)
+  (treemacs-git-mode 'extended))
+
+(use-package treemacs-projectile
+  :after (treemacs projectile)
+  :defer t)
+
+(use-package treemacs-magit
+  :after (treemacs magit)
+  :defer t)
+
+(with-eval-after-load 'treemacs
+  (define-key treemacs-mode-map (kbd "q") #'treemacs-quit))
+#+end_src
+
+* LSP
+
+#+begin_src emacs-lisp
+(use-package lsp-mode
+  :commands (lsp lsp-deferred)
+  :hook ((python-mode   . lsp-deferred)
+         (julia-mode    . lsp-deferred)
+         (c-mode        . lsp-deferred)
+         (c++-mode      . lsp-deferred)
+         (ess-r-mode    . lsp-deferred)
+         (LaTeX-mode    . lsp-deferred)
+         (html-mode     . lsp-deferred)
+         (css-mode      . lsp-deferred)
+         (web-mode      . lsp-deferred)
+         (markdown-mode . lsp-deferred)
+         (fortran-mode  . lsp-deferred)
+         (f90-mode      . lsp-deferred))
+  :init
+  (setq lsp-auto-guess-root t
+        lsp-headerline-breadcrumb-enable nil
+        lsp-warn-no-matched-clients nil
+        lsp-disabled-clients '(ruff-lsp semgrep-ls)
+        lsp-enable-file-watchers nil
+        lsp-enable-on-type-formatting nil
+        lsp-enable-indentation nil)
+  :custom
+  (lsp-idle-delay 0.2)
+  :config
+  (setq lsp-clients-texlab-executable "texlab"
+        lsp-auto-configure t
+        lsp-restart 'auto-restart)
+
+  (defun fp/lsp-add-project-root-once ()
+    (when (and (boundp 'lsp-mode) lsp-mode)
+      (let* ((root (or (and (fboundp 'project-current)
+                            (when-let ((pr (project-current)))
+                              (car (project-roots pr))))
+                       (vc-root-dir)
+                       default-directory)))
+        (when (and root
+                   (not (member root (lsp-session-folders (lsp-session)))))
+          (lsp-workspace-folders-add root)))))
+
+  (add-hook 'lsp-mode-hook #'fp/lsp-add-project-root-once)
+
+  (defun fp/lsp-special-buffers-writable ()
+    (when (string-match-p "\\*.*\\*" (buffer-name))
+      (read-only-mode -1)))
+
+  (add-hook 'lsp-mode-hook #'fp/lsp-special-buffers-writable)
+  (add-hook 'after-init-hook #'fp/lsp-special-buffers-writable))
+
+;; User-space LSP bindings
+(global-set-key (kbd "C-c l r") #'lsp-rename)
+(global-set-key (kbd "C-c l f") #'lsp-format-buffer)
+#+end_src
+
+** Lsp-ui
+
+#+begin_src emacs-lisp
+(use-package lsp-ui
+  :after lsp-mode
+  :hook (lsp-mode . lsp-ui-mode)
+  :custom
+  (lsp-ui-sideline-enable t)
+  (lsp-ui-doc-enable t)
+  (lsp-ui-doc-delay 0.2)
+  (lsp-ui-peek-enable t)
+  (lsp-ui-sideline-show-diagnostics t)
+  (lsp-ui-sideline-show-code-actions t))
+#+end_src
+
+** Debugging
+
+#+begin_src emacs-lisp
+(use-package dap-mode
+  :after lsp-mode
+  :commands dap-debug
+  :init
+  (setq dap-auto-configure-features '(sessions locals controls tooltip))
+  :config
+  (dap-auto-configure-mode 1)
+
+  (require 'dap-python   nil t)
+  (require 'dap-cpptools nil t)
+  (require 'dap-lldb     nil t)
+  (require 'dap-gdb-lldb nil t)
+
+  (dap-register-debug-template
+   (list :type "lldb"
+         :request "launch"
+         :name "Rust::Run"
+         :program "${workspaceFolder}/target/debug/${workspaceFolderBasename}"
+         :cwd "${workspaceFolder}")))
+#+end_src
+
+* Programming
+
+** Generic dev extras
+
+#+begin_src emacs-lisp
+(use-package multiple-cursors
+  :bind (("C-S-c C-S-c" . mc/edit-lines)
+         ("C->"         . mc/mark-next-like-this)
+         ("C-<"         . mc/mark-previous-like-this)
+         ("C-c C-<"     . mc/mark-all-like-this)))
+
+(use-package expand-region
+  :bind (("C-=" . er/expand-region)))
+
+(use-package editorconfig
+  :config (editorconfig-mode 1))
+
+(use-package iedit
+  :bind (("C-c i" . iedit-mode)))
+#+end_src
+
+** Python
+
+#+begin_src emacs-lisp
+(use-package lsp-pyright
+  :after lsp-mode
+  :hook (python-mode . (lambda ()
+                         (require 'lsp-pyright)
+                         (lsp-deferred))))
+
+(use-package py-vterm-interaction
+  :hook (python-mode . py-vterm-interaction-mode)
+  :config
+  (setq-default py-vterm-interaction-repl-program "ipython -i")
+  (setq-default py-vterm-interaction-silent-cells t))
+#+end_src
+
+** Julia
+
+#+begin_src emacs-lisp
+(use-package julia-mode)
+
+(use-package lsp-julia
+  :after lsp-mode
+  :custom
+  (lsp-julia-package-dir nil)
+  (lsp-julia-default-environment nil))
+
+(use-package company-math)
+
+(defun fp/company-after-completion-forward-word (&rest _ignored)
+  (forward-word))
+
+(defun fp/julia-unicode-setup ()
+  (setq-local company-backends
+              '(company-math-symbols-unicode
+                company-capf
+                company-yasnippet))
+  (setq-local company-minimum-prefix-length 1)
+  (setq-local company-idle-delay 0)
+  (add-hook 'company-completion-finished-hook
+            #'fp/company-after-completion-forward-word
+            nil t))
+
+(add-hook 'julia-mode-hook #'fp/julia-unicode-setup)
+
+(use-package vterm :commands vterm)
+
+(use-package julia-repl
+  :after (julia-mode vterm)
+  :config
+  (julia-repl-set-terminal-backend 'vterm))
+#+end_src
+
+** R
+
+#+begin_src emacs-lisp
+(use-package ess
+  :mode (("\\.r\\'"        . ess-r-mode)
+         ("\\.R\\'"        . ess-r-mode)
+         ("\\.Rprofile\\'" . ess-r-mode)
+         ("\\.Renviron\\'" . ess-r-mode)
+         ("\\.Rhistory\\'" . ess-r-mode))
+  :config
+  (require 'ess-site)
+  (setq ess-mode-line-indicator '(" R " ess-current-process-name)
+        ess-R-font-lock-keywords 'ess-R-font-lock-keywords-3))
+#+end_src
+
+** C/C++
+
+#+begin_src emacs-lisp
+(use-package cc-mode :ensure nil)
+#+end_src
+
+** Fortran
+
+#+begin_src emacs-lisp
+(with-eval-after-load 'lsp-mode
+  (setq lsp-fortran-free-form t
+        lsp-fortran-line-length 132
+        lsp-fortran-pp-extensions '("F90" "F95" "F03" "F08")))
+#+end_src
+
+** Rust
+
+#+begin_src emacs-lisp
+(use-package rust-mode
+  :mode "\\.rs\\'"
+  :hook ((rust-mode . lsp-deferred)
+         (rust-mode . cargo-minor-mode))
+  :custom (rust-format-on-save nil))
+
+(use-package cargo
+  :hook (rust-mode . cargo-minor-mode))
+
+(with-eval-after-load 'lsp-mode
+  (setq lsp-rust-server 'rust-analyzer
+        lsp-rust-analyzer-cargo-watch-command "clippy"
+        lsp-rust-analyzer-proc-macro-enable t
+        lsp-rust-analyzer-completion-add-call-parenthesis t))
+#+end_src
+
+* Editing
+
+** LaTeX
+
+*** AUCTeX (Okular default)
+
+#+begin_src emacs-lisp
+(use-package auctex
+  :hook ((TeX-mode   . TeX-source-correlate-mode)
+         (LaTeX-mode . visual-line-mode))
+  :custom
+  (TeX-PDF-mode t)
+  (TeX-source-correlate-mode t)
+  (TeX-source-correlate-start-server t)
+  (TeX-source-correlate-method 'synctex)
+
+  ;; Okular is the default PDF viewer
+  (TeX-view-program-selection '((output-pdf "Okular")))
+  (TeX-view-program-list '(("Okular" "okular --unique %o#src:%n%b")))
+
+  (TeX-command-extra-options "-shell-escape -file-line-error -synctex=1 -interaction=nonstopmode")
+  :config
+  (use-package auctex-latexmk
+    :config
+    (auctex-latexmk-setup)
+    (setq auctex-latexmk-inherit-TeX-PDF-mode t
+          auctex-latexmk-user-args '("-pdf" "-shell-escape" "-interaction=nonstopmode" "-synctex=1")))
+
+  (add-hook 'TeX-mode-hook (lambda () (setq TeX-command-default "LatexMk"))))
+#+end_src
+
+*** AUCTeX helper functions
+
+#+begin_src emacs-lisp
+(defun fp/latex--pdf-window ()
+  "Return a window currently displaying a PDF buffer."
+  (cl-find-if (lambda (w)
+                (with-current-buffer (window-buffer w)
+                  (derived-mode-p 'pdf-view-mode 'doc-view-mode)))
+              (window-list nil 'nomini)))
+
+(defun fp/latex-view-pdf-right ()
+  "Show the PDF for the current TeX master on the right."
+  (interactive)
+  (let ((pdfwin (fp/latex--pdf-window)))
+    (cond
+     (pdfwin
+      (select-window pdfwin))
+     (t
+      (when (= (count-windows) 1)
+        (split-window-right))
+      (let ((target (or (window-in-direction 'right)
+                        (next-window))))
+        (select-window target)
+        (TeX-view))))
+    (other-window -1)))
+
+(defun fp/latex-compile-and-view ()
+  "Compile with LatexMk"
+  (interactive)
+  (let ((srcwin (selected-window)))
+    (TeX-command "LatexMk" TeX-master-file -1)
+    (run-at-time
+     "0.3 sec" nil
+     (lambda ()
+       (when (window-live-p srcwin)
+         (select-window srcwin))
+       (fp/latex-view-pdf-right)))))
+#+end_src
+
+** LaTeX IDE key
+
+#+begin_src emacs-lisp
+(defun fp/latex--ensure-pdf-right ()
+  "Ensure a PDF"
+  (let ((pdfwin (fp/latex--pdf-window)))
+    (cond
+     (pdfwin pdfwin)
+     (t
+      (when (= (count-windows) 1)
+        (split-window-right))
+      (let ((target (or (window-in-direction 'right) (next-window))))
+        (select-window target)
+        (TeX-view)
+        (fp/latex--pdf-window))))))
+
+(defun fp/latex-ide-build (&optional focus-pdf)
+  "IDE build..."
+  (interactive "P")
+  (let ((srcwin (selected-window)))
+    (TeX-command "LatexMk" TeX-master-file -1)
+    (run-at-time
+     "0.35 sec" nil
+     (lambda ()
+       (when (window-live-p srcwin)
+         (select-window srcwin))
+       (let ((pdfwin (fp/latex--ensure-pdf-right)))
+         (when (and pdfwin (fboundp 'TeX-source-correlate-sync-from-source))
+           (with-selected-window srcwin
+             (ignore-errors (TeX-source-correlate-sync-from-source))))
+         (when focus-pdf
+           (when pdfwin (select-window pdfwin))))))))
+#+end_src
+
+** LaTeX user keybindings (avoid C-c C-* globally)
+
+#+begin_src emacs-lisp
+;; <f6> as dedicated “IDE build” key
+(global-set-key (kbd "<f6>") #'fp/latex-ide-build)
+
+;; User-space prefix for LaTeX workflow
+(global-set-key (kbd "C-c v o") #'fp/latex-view-pdf-right)
+(global-set-key (kbd "C-c v p") #'fp/latex-compile-and-view)
+(global-set-key (kbd "C-c v b") #'fp/latex-ide-build)
+#+end_src
+
+* Formatters & Snippets
+
+** Apheleia
+
+#+begin_src emacs-lisp
+(use-package apheleia
+  :config
+  (apheleia-global-mode +1)
+
+  (defun fp/when-exec (bin)
+    (and (stringp bin) (executable-find bin)))
+
+  (with-eval-after-load 'apheleia
+    (when (fp/when-exec "black")
+      (setf (alist-get 'black apheleia-formatters) '("black" "-q" "-")
+            (alist-get 'python-mode apheleia-mode-alist) '(black)))
+
+    (when (fp/when-exec "julia")
+      (setf (alist-get 'juliaformat apheleia-formatters)
+            '("julia" "-e"
+              "using JuliaFormatter")
+            (alist-get 'julia-mode apheleia-mode-alist) '(juliaformat)))
+
+    (when (fp/when-exec "Rscript")
+      (setf (alist-get 'styler apheleia-formatters)
+            '("Rscript" "-e"
+              "con <- file('stdin'); txt <- readLines(con); close(con); cat(styler::style_text(txt), sep = '\n')")
+            (alist-get 'ess-r-mode apheleia-mode-alist) '(styler)))
+
+    (when (fp/when-exec "clang-format")
+      (setf (alist-get 'clang-format apheleia-formatters) '("clang-format")
+            (alist-get 'c-mode apheleia-mode-alist) '(clang-format)
+            (alist-get 'c++-mode apheleia-mode-alist) '(clang-format)))
+
+    (when (fp/when-exec "fprettify")
+      (setf (alist-get 'fprettify apheleia-formatters) '("fprettify" "--silent")
+            (alist-get 'fortran-mode apheleia-mode-alist) '(fprettify)
+            (alist-get 'f90-mode apheleia-mode-alist) '(fprettify)))
+
+    (when (fp/when-exec "rustfmt")
+      (setf (alist-get 'rustfmt apheleia-formatters) '("rustfmt" "--emit=stdout")
+            (alist-get 'rust-mode apheleia-mode-alist) '(rustfmt)))
+
+    (when (fp/when-exec "latexindent")
+      (setf (alist-get 'latexindent apheleia-formatters)
+            '("latexindent" "-y=defaultIndent: '  '" "--silent" "-")
+            (alist-get 'latex-mode apheleia-mode-alist) '(latexindent)
+            (alist-get 'LaTeX-mode apheleia-mode-alist) '(latexindent)))))
+#+end_src
+
+** Snippets
+
+#+begin_src emacs-lisp
+(setq yas-verbosity 0)
+
+(use-package yasnippet
+  :config (yas-global-mode 1))
+
+(use-package yasnippet-snippets)
+#+end_src
+
+* Terminals
+
+#+begin_src emacs-lisp
+(use-package vterm
+  :commands vterm
+  :init (setq vterm-install t)
+  :config (setq vterm-max-scrollback 100000))
+
+(use-package multi-vterm
+  :after vterm
+  :config
+  (setq multi-vterm-dedicated-window-height 35)
+  (define-key vterm-mode-map (kbd "C-c C-c") #'vterm-send-C-c))
+
+(define-prefix-command 'fp/term-map)
+(global-set-key (kbd "C-c t") 'fp/term-map)
+
+;; Open -- navigation
+(define-key fp/term-map (kbd "t") #'multi-vterm)
+(define-key fp/term-map (kbd "n") #'multi-vterm-next)
+(define-key fp/term-map (kbd "p") #'multi-vterm-prev)
+(define-key fp/term-map (kbd "d") #'multi-vterm-dedicated-toggle)
+
+(defun fp/vterm-project ()
+  (interactive)
+  (let* ((project (project-current t))
+         (default-directory (project-root project)))
+    (multi-vterm)))
+
+(define-key fp/term-map (kbd "P") #'fp/vterm-project)
+
+(defun fp/vterm--ensure ()
+  (unless (multi-vterm-get-buffer)
+    (multi-vterm)))
+
+(defun fp/vterm-send-region (start end)
+  (interactive "r")
+  (let ((text (buffer-substring-no-properties start end)))
+    (fp/vterm--ensure)
+    (multi-vterm-next)
+    (vterm-send-string text)
+    (vterm-send-return)))
+
+(define-key fp/term-map (kbd "r") #'fp/vterm-send-region)
+
+(defun fp/vterm-send-line ()
+  (interactive)
+  (let ((text (thing-at-point 'line t)))
+    (fp/vterm--ensure)
+    (multi-vterm-next)
+    (vterm-send-string text)
+    (vterm-send-return)))
+
+(define-key fp/term-map (kbd "l") #'fp/vterm-send-line)
+
+(defun fp/vterm-right ()
+  (interactive)
+  (split-window-right)
+  (other-window 1)
+  (multi-vterm))
+
+(define-key fp/term-map (kbd "v") #'fp/vterm-right)
+
+(defun fp/vterm-clear ()
+  (interactive)
+  (fp/vterm--ensure)
+  (vterm-send-C-l))
+
+;; Clear under terminal prefix
+(define-key fp/term-map (kbd "c") #'fp/vterm-clear)
+
+(defun fp/vterm-toggle ()
+  (interactive)
+  (let* ((buf "*vterm*")
+         (win (get-buffer-window buf)))
+    (if win
+        (delete-window win)
+      (select-window (split-window-right))
+      (other-window 1)
+      (if (get-buffer buf)
+          (switch-to-buffer buf)
+        (vterm)))))
+
+(define-key fp/term-map (kbd "|") #'fp/vterm-toggle)
+#+end_src
+
+* Org Mode
+
+#+begin_src emacs-lisp
+(use-package org
+  :ensure nil
+  :config
+  (setq org-startup-indented t
+        org-hide-emphasis-markers t
+        org-startup-with-inline-images t
+        org-ellipsis " ▼ "
+        org-src-fontify-natively t
+        org-src-tab-acts-natively t
+        org-export-with-smart-quotes t
+        org-return-follows-link t)
+
+  (setq org-id-link-to-org-use-id 'create-if-interactive)
+
+  (org-babel-do-load-languages
+   'org-babel-load-languages
+   '((emacs-lisp . t)
+     (python     . t)
+     (julia      . t)
+     (R          . t)
+     (shell      . t)
+     (C          . t)))
+
+  (add-hook 'org-babel-after-execute-hook #'org-redisplay-inline-images))
+
+;; Confirm execution only for shell blocks
+(setq org-confirm-babel-evaluate
+      (lambda (lang _body)
+        (member lang '("sh" "shell"))))
+#+end_src
+
+#+begin_src emacs-lisp
+(use-package org-appear
+  :hook (org-mode . org-appear-mode)
+  :config
+  (setq org-appear-autoemphasis t
+        org-appear-autosubmarkers t
+        org-appear-autolinks t)
+  (run-at-time nil nil #'org-appear--set-elements))
+
+(use-package org-superstar
+  :hook (org-mode . org-superstar-mode)
+  :config
+  (setq org-superstar-headline-bullets-list '("●" "○" "◆" "◇" "✦" "•")
+        org-superstar-prettify-item-bullets t))
+
+(use-package org-fragtog
+  :hook (org-mode . org-fragtog-mode))
+
+(setq org-format-latex-options
+      (plist-put org-format-latex-options :background "Transparent"))
+#+end_src
+
+** Org export PDF
+
+#+begin_src emacs-lisp
+(with-eval-after-load 'org
+  (setq org-latex-listings 'minted
+        org-latex-packages-alist '(("" "minted"))
+        org-latex-pdf-process
+        '("xelatex -shell-escape -interaction nonstopmode -output-directory %o %f"
+          "xelatex -shell-escape -interaction nonstopmode -output-directory %o %f")))
+#+end_src
+
+** Org reveal
+
+#+begin_src emacs-lisp
+(use-package ox-reveal
+  :after org
+  :custom
+  ;; Reveal.js via CDN
+  (org-reveal-root "https://cdn.jsdelivr.net/npm/reveal.js")
+  ;; MathJax via CDN
+  (org-reveal-mathjax-url
+   "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"))
+#+end_src
+
+#+begin_src emacs-lisp
+(with-eval-after-load 'ox-reveal
+  (setq
+   ;; 16:9 always
+   org-reveal-init-options "width:1600,height:900"
+
+   ;; Document override
+   org-reveal-override-defaults nil))
+#+end_src
+
+* Web dev
+
+#+begin_src emacs-lisp
+(use-package web-mode
+  :mode (("\\.html?\\'" . web-mode)
+         ("\\.css\\'"   . web-mode)
+         ("\\.js\\'"    . web-mode)
+         ("\\.jsx\\'"   . web-mode)
+         ("\\.ts\\'"    . web-mode)
+         ("\\.tsx\\'"   . web-mode))
+  :hook (web-mode . lsp-deferred)
+  :config
+  (setq web-mode-enable-auto-pairing t
+        web-mode-enable-auto-closing t
+        web-mode-enable-auto-quoting t
+        web-mode-enable-css-colorization t
+        web-mode-markup-indent-offset 2
+        web-mode-code-indent-offset 2
+        web-mode-css-indent-offset 2))
+
+(use-package prettier
+  :hook ((web-mode        . prettier-mode)
+         (css-mode        . prettier-mode)
+         (js-mode         . prettier-mode)
+         (typescript-mode . prettier-mode)
+         (json-mode       . prettier-mode)
+         (markdown-mode   . prettier-mode))
+  :config
+  (setq prettier-inline-errors-flag t
+        prettier-enabled-parsers '(css html js json ts markdown)))
+
+(use-package emmet-mode
+  :hook ((web-mode      . emmet-mode)
+         (html-mode     . emmet-mode)
+         (css-mode      . emmet-mode)
+         (markdown-mode . emmet-mode))
+  :config
+  (setq emmet-expand-jsx-className? t
+        emmet-self-closing-tag-style " /"))
+#+end_src
+
+* Markdown
+
+#+begin_src emacs-lisp
+(use-package markdown-mode
+  :mode (("\\.md\\'"       . markdown-mode)
+         ("\\.markdown\\'" . markdown-mode))
+  :hook ((markdown-mode . visual-line-mode)
+         (markdown-mode . flyspell-mode)
+         (markdown-mode . lsp-deferred))
+  :config
+  (setq markdown-fontify-code-blocks-natively t
+        markdown-enable-wiki-links t
+        markdown-enable-math t
+        markdown-hide-markup t
+        markdown-header-scaling t
+        markdown-command "pandoc"))
+#+end_src
+
+* Utils & Dev helpers
+
+#+begin_src emacs-lisp
+(global-set-key (kbd "C-c f") #'project-find-file)
+(global-set-key (kbd "C-c g") #'magit-status)
+
+(global-set-key (kbd "C-c h") #'hs-toggle-hiding)
+(add-hook 'prog-mode-hook #'hs-minor-mode)
+
+(global-set-key (kbd "C-c y") #'yas-insert-snippet)
+
+(defun fp/toggle-comment ()
+  (interactive)
+  (let (beg end)
+    (if (use-region-p)
+        (setq beg (region-beginning) end (region-end))
+      (setq beg (line-beginning-position) end (line-end-position)))
+    (comment-or-uncomment-region beg end)))
+
+(global-set-key (kbd "C-c /") #'fp/toggle-comment)
+
+(defun fp/run-file ()
+  (interactive)
+  (save-buffer)
+  (cond
+   ((derived-mode-p 'python-mode)
+    (compile (format "python3 %s" (shell-quote-argument buffer-file-name))))
+   ((derived-mode-p 'julia-mode)
+    (compile (format "julia %s" (shell-quote-argument buffer-file-name))))
+   ((derived-mode-p 'c-mode)
+    (compile (format "gcc %s -o %s.out && ./%s.out"
+                     (shell-quote-argument buffer-file-name)
+                     (file-name-sans-extension buffer-file-name)
+                     (file-name-sans-extension buffer-file-name))))
+   ((derived-mode-p 'ess-r-mode)
+    (compile (format "Rscript %s" (shell-quote-argument buffer-file-name))))
+   (t
+    (message "Unsupported language for fp/run-file"))))
+
+(global-set-key (kbd "C-c e") #'fp/run-file)
+
+(defun fp/duplicate-line-or-region ()
+  (interactive)
+  (let ((origin (point)))
+    (if (use-region-p)
+        (let ((region (buffer-substring (region-beginning) (region-end))))
+          (goto-char (region-end))
+          (newline)
+          (insert region))
+      (let ((line (thing-at-point 'line t)))
+        (end-of-line)
+        (newline)
+        (insert line)))
+    (goto-char origin)))
+
+(global-set-key (kbd "C-c D") #'fp/duplicate-line-or-region)
+
+(defun fp/open-current-dir ()
+  (interactive)
+  (dired (file-name-directory (or buffer-file-name default-directory))))
+
+(global-set-key (kbd "C-c o") #'fp/open-current-dir)
+
+(defun fp/search-todo ()
+  (interactive)
+  (consult-ripgrep nil "\\b\\(TODO\\|FIXME\\|NOTE\\)\\b"))
+
+(global-set-key (kbd "C-c T") #'fp/search-todo)
+
+(defun fp/insert-timestamp ()
+  (interactive)
+  (let* ((prefix (or comment-start "// "))
+         (ts (format-time-string "%Y-%m-%d %H:%M:%S")))
+    (insert (format "%s %s" prefix ts))))
+
+(global-set-key (kbd "C-c I") #'fp/insert-timestamp)
+#+end_src
+
+* Automatic tangle
+
+#+begin_src emacs-lisp
+(defun fp/tangle-and-reload-config ()
+  (when (and buffer-file-name
+             (string-equal (file-truename buffer-file-name)
+                           (file-truename (expand-file-name "~/.emacs.d/config.org"))))
+    (let ((load-verbose nil)
+          (org-babel-verbose nil)
+          (org-babel-tangle-quiet t))
+      (org-babel-tangle-file (expand-file-name "~/.emacs.d/config.org")
+                             (expand-file-name "~/.emacs.d/config.el"))
+      (load (expand-file-name "~/.emacs.d/config.el") nil 'nomessage))))
+
+(remove-hook 'after-save-hook #'fp/tangle-and-reload-config)
+(add-hook 'after-save-hook #'fp/tangle-and-reload-config)
+#+end_src
+
+* Cheatsheet
+
+* Full Keymaps
+
+- For the *exact* truth on your machine at runtime, use:
+  - =C-h b= (=describe-bindings=)
+  - =C-h m= (=describe-mode=)
+  - =C-h k= (=describe-key=)
+
+** Global
+
+*** Window -- frame -- split
+- =C-x 2= → =fp/split-window-below-and-pick-buffer=
+- =C-x 3= → =fp/split-window-right-and-pick-buffer=
+- =<home>= → =beginning-of-line=
+- =<end>=  → =end-of-line=
+
+*** Consult -- search -- minibuffer
+- =C-s=     → =consult-line=
+- =C-c s r= → =consult-ripgrep=
+- =C-c s i= → =isearch-forward= (classic incremental search)
+- =C-c s I= → =isearch-backward= (classic incremental search)
+- =C-x b=   → =consult-buffer=
+- =M-y=     → =consult-yank-pop=
+- =M-g g=   → =consult-goto-line=
+- =M-g i=   → =consult-imenu=
+- =M-g o=   → =consult-outline=
+
+*** Embark
+- =C-.=   → =embark-act=
+- =C-;=   → =embark-dwim=
+- =C-h B= → =embark-bindings=
+
+*** Project -- Git
+- =C-x g= → =magit-status=
+- =C-c g= → =magit-status=
+- =C-c f= → =project-find-file=
+- =C-c o= → =fp/open-current-dir=
+
+*** LSP
+- =C-c l r= → =lsp-rename=
+- =C-c l f= → =lsp-format-buffer=
+
+*** Editing helpers
+- =C-c h= → =hs-toggle-hiding=
+- =C-c y= → =yas-insert-snippet=
+- =C-c /= → =fp/toggle-comment=
+- =C-c D= → =fp/duplicate-line-or-region=
+- =C-c T= → =fp/search-todo=
+- =C-c I= → =fp/insert-timestamp=
+- =C-c e= → =fp/run-file=
+
+*** LaTeX
+- =<f6>=    → =fp/latex-ide-build=
+- =C-c v o= → =fp/latex-view-pdf-right=
+- =C-c v p= → =fp/latex-compile-and-view=
+- =C-c v b= → =fp/latex-ide-build=
+
+*** Treemacs
+- =C-c m=   → =treemacs=
+- =C-c M=   → =treemacs-select-window=
+- =C-c m f= → =treemacs-find-file=
+- =C-c m p= → =treemacs-add-project-to-workspace=
+- =C-c m r= → =treemacs-remove-project-from-workspace=
+
+*** vterm -- multi-vterm
+- =C-c t=     → terminal prefix (fp/term-map)
+- =C-c t t=   → =multi-vterm=
+- =C-c t c=   → =fp/vterm-clear=
+- =C-c t n=   → =multi-vterm-next=
+- =C-c t p=   → =multi-vterm-prev=
+- =C-c t d=   → =multi-vterm-dedicated-toggle=
+- =C-c t P=   → =fp/vterm-project=
+- =C-c t r=   → =fp/vterm-send-region=
+- =C-c t l=   → =fp/vterm-send-line=
+- =C-c t v=   → =fp/vterm-right=
+- =C-c t |=   → =fp/vterm-toggle=
+
+** Emacs base keybindings
+
+*** Help -- introspection
+- =C-h ?= → =help-for-help=
+- =C-h k= → =describe-key=
+- =C-h f= → =describe-function=
+- =C-h v= → =describe-variable=
+- =C-h m= → =describe-mode=
+- =C-h b= → =describe-bindings=
+
+*** Files
+- =C-x C-f= → =find-file=
+- =C-x C-s= → =save-buffer=
+- =C-x C-w= → =write-file=
+- =C-x s=   → =save-some-buffers=
+- =C-x C-c= → =save-buffers-kill-terminal=
+
+*** Buffers
+- =C-x b=   → =switch-to-buffer=
+- =C-x k=   → =kill-buffer=
+- =C-x C-b= → =list-buffers=
+
+*** Windows -- frames
+- =C-x 0=   → =delete-window=
+- =C-x 1=   → =delete-other-windows=
+- =C-x 2=   → =split-window-below=
+- =C-x 3=   → =split-window-right=
+- =C-x o=   → =other-window=
+- =C-x 5 2= → =make-frame=
+- =C-x 5 0= → =delete-frame=
+- =C-x 5 o= → =other-frame=
+
+*** Navigation -- editing essentials
+- =C-a= / =C-e= → beginning / end of line
+- =M-<= / =M->= → beginning / end of buffer
+- =M-f= / =M-b= → forward / backward word
+- =C-/= or =C-x u= → =undo=
+- =C-k= → =kill-line=
+- =M-w= → =kill-ring-save= (copy)
+- =C-w= → =kill-region= (cut)
+- =C-y= → =yank= (paste)
+- =M-y= → =yank-pop=
+
+*** Search -- replace
+- =C-s= → =isearch-forward=
+- =C-r= → =isearch-backward=
+- =M-%= → =query-replace=
+- =C-M-%= → =query-replace-regexp=
+
+*** Prefix conventions
+- =C-c <letter>= is reserved for *users*
+- =C-c C-<letter>= is reserved for *major modes*
+
+** Mode keymaps
+
+Some keys can differ depending on versions; check =C-h m= in that mode.
+
+*** Org mode
+- =TAB= → cycle visibility / fold subtree (depends on context)
+- =S-TAB= → global visibility cycling
+- =M-RET= → insert new heading/item depending on context
+- =M-S-RET= → insert TODO heading / new item (context)
+- =C-c C-t= → cycle TODO state
+- =C-c C-s= → schedule
+- =C-c C-d= → deadline
+- =C-c C-c= → context-sensitive “do the right thing” (toggle checkbox, re-align table, etc.)
+- =C-c C-e= → export dispatcher
+- =C-c C-l= → insert link
+- =C-c C-o= → open link at point
+Source blocks:
+- =C-c C-,= → =org-insert-structure-template= (in recent Org versions; sometimes =C-c C-,=)
+- =C-c '= → edit source block in an indirect buffer (=org-edit-special=)
+- =C-c C-c= inside src edit → confirm / exit and apply (=org-edit-src-exit=)
+Babel execution:
+- =C-c C-c= on a src block → execute (=org-babel-execute-src-block=) (confirmation depends on your config)
+
+**** Org-appear -- org-superstar -- org-fragtog:
+Potential collision note:
+- Many setups use =C-c c= for =org-capture=. You avoided this by moving vterm clear away from =C-c c=.
+
+*** LaTeX mode -- AUCTeX
+AUCTeX basics:
+- =C-c C-c= → compile / run command (=TeX-command-master=)
+- =C-c C-v= → view output (=TeX-view=) (often also does forward search with Synctex)
+- =C-c `= → next error (=TeX-next-error=)
+Custom LaTeX workflow:
+- =F6= → =fp/latex-ide-build=
+- =C-c v o= → open PDF on right (=fp/latex-view-pdf-right=)
+- =C-c v p= → compile + show PDF on right (=fp/latex-compile-and-view=)
+- =C-c v b= → alias for IDE build (=fp/latex-ide-build=)
+
+*** Dired
+- =RET= / =f= → open file / enter directory
+- =^= → go up directory
+- =g= → refresh (=revert-buffer=)
+- =C= → copy
+- =R= → rename/move
+- =D= → delete
+- =+= → create directory
+- =m= → mark
+- =u= → unmark
+- =U= → unmark all
+- =t= → toggle marks
+- =*= → mark by pattern submenu
+
+*** Minibuffer completion stack; Vertico -- Orderless -- Marginalia
+Vertico (in minibuffer):
+- =C-n= / =C-p= → next/previous candidate
+- =M-n= / =M-p= → next/previous group or history (varies)
+- =RET= → accept
+- =TAB= → complete (depends on completion settings)
+Marginalia:
+- Typically no keybindings needed; annotations appear automatically.
+
+*** Consult
+Common:
+- =C-s= → =consult-line=
+- =C-x b= → =consult-buffer=
+- =M-y= → =consult-yank-pop=
+- =C-c s r= → =consult-ripgrep=
+Preview:
+- =consult-preview-key= to =C-j= and =C-k= inside Consult UIs.
+
+*** Embark
+- =C-.= → =embark-act=
+- =C-;= → =embark-dwim=
+- =C-h B= → =embark-bindings=
+In Embark collect buffers:
+- additional actions depend on context; see =C-h m= when inside =Embark Collect=.
+
+*** Company
+Default Company keys (common):
+- =M-/= or completion triggers depending on setup (often via CAPF)
+- When popup is shown:
+  - =M-n= / =M-p= → next/previous candidate (often)
+  - =C-n= / =C-p= → next/previous candidate (often)
+  - =RET= may accept. Because you enable =company-tng-configure-default=:
+- Often =TAB= / =RET= behave like “complete-and-go”, depending on context.
+
+*** Yasnippet
+Common:
+- =TAB= / =<tab>= expands snippet depending on configuration
+Custom:
+- =C-c y= → =yas-insert-snippet=
+
+*** Multiple cursors (=multiple-cursors-mode=)
+- =C-S-c C-S-c= → =mc/edit-lines=
+- =C->= → =mc/mark-next-like-this=
+- =C-<= → =mc/mark-previous-like-this=
+- =C-c C-<= → =mc/mark-all-like-this=
+
+*** Expand region
+- =C-== → =er/expand-region=
+
+*** Iedit
+- =C-c i= → =iedit-mode=
+
+*** HideShow (=hs-minor-mode=)
+- =C-c h= → =hs-toggle-hiding=
+Default
+use =C-h m= to see exact.
+
+*** Magit
+Entry points
+- =C-x g= → =magit-status=
+- =C-c g= → =magit-status=
+Inside Magit buffers
+- =q= → quit window
+- =g= → refresh
+- =TAB= → fold/expand section
+- =s= → stage
+- =u= → unstage
+- =c c= → commit
+- =P= → push
+- =F= → pull/fetch
+use =?= inside Magit for its transient help.
+
+*** Treemacs
+- =C-c m= etc. (global entries above)
+Inside Treemacs:
+- =q= → =treemacs-quit=
+Common Treemacs keys (often):
+- =RET= → visit node
+- =TAB= → expand/collapse
+- =g= → refresh
+see =C-h m= inside Treemacs
+
+*** vterm -- multi-vterm
+- =C-c t= → open multi-vterm
+- =C-c n= / =C-c p= → cycle vterms
+- =C-c d= → toggle dedicated
+- =C-c t c= → clear (=fp/vterm-clear=)
+- =C-c r= → send region
+- =C-c l= → send line
+- =C-c |= → toggle vterm window
+Inside vterm itself
+- =C-c C-c= → send C-c to the terminal
+
+*** LSP  and LSP-UI
+- =C-c l r= → =lsp-rename=
+- =C-c l f= → =lsp-format-buffer=
+Common LSP commands (usually via =M-x=):
+- =lsp-find-definition=, =lsp-find-references=, =lsp-execute-code-action=, etc.
+LSP-UI (common):
+- =lsp-ui-peek-find-definitions= and friends are available
+
+*** (=dap-mode=)
+Check =C-h m= when you’re in a DAP session buffer.
+
+*** Programming major modes in your config
+**** Python
+- No extra global keys beyond =C-c e= runner and LSP hooks.
+- =py-vterm-interaction= adds commands; keybindings depend on that package (check =C-h m= in python-mode)
+
+**** Julia
+- =julia-repl= commands depend on the package; typically invoked via =M-x julia-repl= functions
+- You have LSP hooks; keys via your global LSP prefix
+
+**** R
+- ESS has many built-in bindings
+- Best: open an R buffer and do =C-h m=
+
+**** Rust
+- Cargo minor mode adds bindings (often under =C-c C-c= prefix or similar)
+- Exact keys vary; see =C-h m= inside a Rust buffer
+
+**** Web
+- Prettier often provides =prettier-prettify= via =M-x=; sometimes adds minor-mode bindings
+- Emmet commonly uses a key to expand abbreviation
+- Best: =C-h m= inside a web-mode buffer
+
+**** Markdown
+- Markdown has many bindings for preview/export; exact keys vary
+- Again: =C-h m= in a markdown buffer
+
+** Overrides summary
+- =C-s=: =isearch-forward= → =consult-line=
+- =C-x b=: =switch-to-buffer= → =consult-buffer=
+- =M-y=: =yank-pop= → =consult-yank-pop=
+- =M-g g=: =goto-line= → =consult-goto-line=
+- =C-x 2=: =split-window-below= → =fp/split-window-below-and-pick-buffer=
+- =C-x 3=: =split-window-right= → =fp/split-window-right-and-pick-buffer=
+
+Keep classic search accessible via:
+- =C-c s i= → =isearch-forward=
+- =C-c s I= → =isearch-backward=

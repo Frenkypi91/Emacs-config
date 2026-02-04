@@ -1,0 +1,10 @@
+# -*- mode: snippet -*-
+# name: subroutine
+# key: sub
+# --
+subroutine ${1:name}(${2:args})
+    implicit none
+
+    ${0}
+
+end subroutine ${1:name}

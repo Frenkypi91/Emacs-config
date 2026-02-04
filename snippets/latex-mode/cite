@@ -1,0 +1,5 @@
+# -*- mode: snippet -*-
+# name: parencite
+# key: cite
+# --
+\parencite{${1:key}}
