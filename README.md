@@ -1,4 +1,4 @@
-#Emacs config
+# Emacs config
 
 This configuration is designed to be especially useful for *econometricians* and *data scientists*, precisely because I am an econometrician myself.  
 The core idea is to have a lightweight but powerful ***IDE*** that supports multiple languages and allows exporting work in *markup* languages such as:
